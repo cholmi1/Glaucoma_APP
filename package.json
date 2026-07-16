@@ -1,0 +1,22 @@
+{
+  "name": "anapcare-glaucoma-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "안압케어 — CVT200 기반 녹내장 안압·점안·문진·건강 통합관리 앱 (환자 앱 + 의료진 웹 프로토타입)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7",
+    "lucide-react": "^0.383.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.3.4"
+  }
+}
