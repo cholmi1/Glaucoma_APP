@@ -1,0 +1,9 @@
+{
+  "name": "안압케어 — 녹내장 통합관리",
+  "short_name": "안압케어",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F3F7F6",
+  "theme_color": "#0E5563",
+  "icons": []
+}

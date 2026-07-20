@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
-  LineChart, Line, ScatterChart, Scatter, ComposedChart, Area, Bar, Cell, XAxis, YAxis, ZAxis, ResponsiveContainer,
+  LineChart, Line, ScatterChart, Scatter, ComposedChart, Area, Bar, BarChart, Cell, XAxis, YAxis, ZAxis, ResponsiveContainer,
   ReferenceArea, ReferenceLine, Tooltip, CartesianGrid,
 } from "recharts";
 import {
@@ -197,15 +197,32 @@ function TrendTip({ active, payload, label }) {
     </div>
   );
 }
-function PeriodTabs({ value, onChange }) {
+function PeriodTabs({ value, onChange, options = PERIODS }) {
   return (
     <div className="flex" style={{ gap: 4, flexWrap: "wrap" }}>
-      {PERIODS.map((p) => (
+      {options.map((p) => (
         <button key={p} onClick={() => onChange(p)} className="cursor-pointer"
           style={{ border: `1px solid ${value === p ? C.primary : C.line}`, background: value === p ? C.primary : "#fff", color: value === p ? "#fff" : C.sub, borderRadius: 999, padding: "5px 11px", fontSize: 11.5, fontWeight: 700, fontFamily: FONT }}>{p}</button>
       ))}
     </div>
   );
+}
+const ADH_PERIODS = ["오늘", "2주", "1개월", "3개월", "6개월", "1년", "누적"];
+function adherenceData(period, meds) {
+  if (period === "오늘") {
+    const sched = meds.filter((m) => m.time !== "필요 시").sort((a, b) => a.time.localeCompare(b.time));
+    return sched.map((m) => ({ d: m.time, pct: m.taken ? 100 : 0, taken: !!m.taken, name: m.name }));
+  }
+  const c = _CFG[period] || _CFG["1개월"]; const base = _hash("adh" + period);
+  const out = [];
+  for (let i = 0; i < c.n; i++) {
+    const date = new Date(TODAY_REF); date.setDate(date.getDate() - (c.n - 1 - i) * c.step);
+    const r = _rnd(base + i);
+    const low = r < 0.22;
+    const pct = low ? Math.round(55 + _rnd(base + 30 + i) * 20) : Math.round(90 + _rnd(base + 60 + i) * 10);
+    out.push({ d: _fmt(date, c.kind), pct: Math.min(100, pct), taken: pct >= 80 });
+  }
+  return out;
 }
 function TrendChart({ data, height = 190, targetOS = 16 }) {
   return (
@@ -238,6 +255,119 @@ function DayStat({ eye, avg, min, max, col }) {
       <div className="flex items-baseline gap-1.5"><span style={{ fontSize: 11.5, color: C.sub, fontWeight: 700 }}>{eye}</span><span style={{ fontSize: 18, fontWeight: 800, color: col, fontVariantNumeric: "tabular-nums" }}>{avg}</span><span style={{ fontSize: 10.5, color: C.sub }}>평균</span></div>
       <div style={{ fontSize: 10.5, color: C.sub, marginTop: 1 }}>최소 {min} · 최대 {max} mmHg</div>
     </div>
+  );
+}
+function AdherenceChart({ data, height = 150, today }) {
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={data} margin={{ top: 6, right: 6, left: today ? -30 : -22, bottom: 0 }}>
+        <CartesianGrid stroke={C.line} vertical={false} />
+        <XAxis dataKey="d" interval={today ? 0 : "preserveStartEnd"} minTickGap={14} tick={{ fontSize: 9.5, fill: C.sub }} axisLine={false} tickLine={false} />
+        <YAxis hide={today} domain={[0, 100]} ticks={[0, 50, 100]} tick={{ fontSize: 9.5, fill: C.sub }} axisLine={false} tickLine={false} width={26} />
+        {!today && <ReferenceLine y={80} stroke={C.low} strokeDasharray="3 3" />}
+        {!today && <Tooltip contentStyle={{ borderRadius: 12, border: `1px solid ${C.line}`, fontSize: 12 }} formatter={(v) => [`${v}%`, "순응도"]} />}
+        <Bar dataKey="pct" radius={[3, 3, 0, 0]} barSize={today ? 30 : 12} isAnimationActive={false}>
+          {data.map((e, i) => <Cell key={i} fill={today ? (e.taken ? C.low : "#E6ECEB") : (e.pct >= 80 ? C.primary : C.mid)} />)}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+/* ---------- 점안 알림: 예정 30분 전 알림 + 예정시간 초과 알람 ---------- */
+const hmToMin = (hm) => { const [h, m] = hm.split(":").map(Number); return h * 60 + m; };
+const minToHM = (min) => `${_pad(Math.floor(((min % 1440) + 1440) % 1440 / 60))}:${_pad(((min % 1440) + 1440) % 1440 % 60)}`;
+function medAlerts(meds, nowMin) {
+  const upcoming = [], overdue = [];
+  meds.forEach((m) => {
+    if (m.time === "필요 시" || m.taken) return;
+    const t = hmToMin(m.time);
+    const diff = t - nowMin;
+    if (diff > 0 && diff <= 30) upcoming.push({ ...m, diff });
+    else if (diff <= 0 && diff > -720) overdue.push({ ...m, late: -diff });
+  });
+  return { upcoming, overdue };
+}
+function medStatus(m, nowMin) {
+  if (m.time === "필요 시") return null;
+  if (m.taken) return null;
+  const diff = hmToMin(m.time) - nowMin;
+  if (diff > 0 && diff <= 30) return { kind: "soon", label: `${diff}분 후 점안`, c: C.mid, soft: C.midSoft };
+  if (diff <= 0 && diff > -720) return { kind: "late", label: `${-diff}분 지남 · 지금 점안하세요`, c: C.high, soft: C.highSoft };
+  return null;
+}
+
+/* ---------- 푸시 알림 (브라우저 Notification API + SW 지원 시 백그라운드) ----------
+   앱(탭)이 백그라운드거나 최소화되어도 OS 알림이 울립니다.
+   완전한 '앱 종료 상태' 푸시는 서버(FCM/APNs·Web Push) 연동이 필요하며,
+   GitHub 프로젝트에는 Service Worker + Push 구독 스캐폴딩이 포함되어 있습니다. */
+function usePushNotifications(upcoming, overdue) {
+  const supported = typeof window !== "undefined" && "Notification" in window;
+  const [permission, setPermission] = useState(supported ? Notification.permission : "unsupported");
+  const [enabled, setEnabled] = useState(false);
+  const sent = useRef(new Set());
+
+  const request = async () => {
+    if (!supported) return;
+    try {
+      const p = await Notification.requestPermission();
+      setPermission(p);
+      if (p === "granted") {
+        setEnabled(true);
+        fire("안압케어 알림이 켜졌습니다", "점안 예정 30분 전 알림과 시간 초과 알람을 보내드립니다.");
+      }
+    } catch (e) { /* iframe 등 차단 환경 */ }
+  };
+  const fire = (title, body, tag) => {
+    if (!supported || Notification.permission !== "granted") return;
+    try {
+      // SW가 등록되어 있으면 SW 경유(백그라운드에서도 표시), 아니면 페이지 알림
+      if (navigator.serviceWorker && navigator.serviceWorker.ready && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.ready.then((reg) => reg.showNotification(title, { body, tag, icon: undefined, badge: undefined, renotify: false }));
+      } else {
+        new Notification(title, { body, tag });
+      }
+    } catch (e) { try { new Notification(title, { body, tag }); } catch (_) {} }
+  };
+
+  useEffect(() => {
+    if (!enabled || permission !== "granted") return;
+    upcoming.forEach((m) => {
+      const key = `soon-${m.id}-${m.time}`;
+      if (!sent.current.has(key)) { sent.current.add(key); fire("점안 예정 알림", `${m.diff}분 후(${m.time}) ${m.name} 점안 예정입니다.`, key); }
+    });
+    overdue.forEach((m) => {
+      const key = `late-${m.id}-${m.time}`;
+      if (!sent.current.has(key)) { sent.current.add(key); fire("⚠️ 점안 시간 초과", `${m.name} 예정 시간(${m.time})이 ${m.late}분 지났습니다. 지금 점안해 주세요.`, key); }
+    });
+  }, [enabled, permission, upcoming, overdue]);
+
+  return { supported, permission, enabled, setEnabled, request };
+}
+function PushToggleCard({ push }) {
+  const st = !push.supported ? { t: "이 환경에서는 브라우저 알림을 지원하지 않습니다.", c: C.sub }
+    : push.permission === "denied" ? { t: "알림이 차단되어 있습니다. 브라우저 설정에서 허용해 주세요.", c: C.high }
+    : push.permission === "granted" && push.enabled ? { t: "푸시 알림 켜짐 · 앱이 백그라운드여도 OS 알림이 울립니다.", c: C.low }
+    : { t: "점안 30분 전 알림·시간 초과 알람을 OS 푸시로 받으세요.", c: C.sub };
+  const on = push.permission === "granted" && push.enabled;
+  return (
+    <Card style={{ padding: 13 }}>
+      <div className="flex items-center gap-3">
+        <div className="flex items-center justify-center flex-shrink-0" style={{ width: 38, height: 38, borderRadius: 12, background: on ? C.lowSoft : C.mint, color: on ? C.low : C.primary }}>
+          <Bell size={18} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div style={{ fontSize: 13.5, fontWeight: 800, color: C.ink }}>푸시 알림</div>
+          <div style={{ fontSize: 11, color: st.c, marginTop: 1, lineHeight: 1.45 }}>{st.t}</div>
+        </div>
+        {push.supported && push.permission !== "denied" && (
+          <button onClick={() => on ? push.setEnabled(false) : push.request()} className="cursor-pointer flex-shrink-0"
+            style={{ border: "none", borderRadius: 999, padding: "8px 14px", fontSize: 12, fontWeight: 800, fontFamily: FONT, background: on ? C.mintDeep : C.primary, color: on ? C.primary : "#fff" }}>
+            {on ? "끄기" : "켜기"}
+          </button>
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -575,26 +705,37 @@ function IOPGauge({ value, target, eye }) {
 /* ============================================================
    HOME
    ============================================================ */
-function HomeScreen({ meds, sessions, go }) {
+function HomeScreen({ meds, sessions, go, targetOD, targetOS, upcoming = [], overdue = [] }) {
+  const [adhPeriod, setAdhPeriod] = useState("오늘");
   const latest = sessions[sessions.length - 1];
-  const overOD = latest.od > PATIENT.targetOD;
+  const overOD = latest.od > targetOD;
   const scheduled = meds.filter((m) => m.time !== "필요 시");
   const done = scheduled.filter((m) => m.taken).length;
+  const adhData = adherenceData(adhPeriod, meds);
+  const overall = adhPeriod === "오늘"
+    ? (scheduled.length ? Math.round((done / scheduled.length) * 100) : 0)
+    : Math.round(adhData.reduce((a, b) => a + b.pct, 0) / (adhData.length || 1));
   return (
     <div className="flex flex-col gap-3.5">
       <div>
         <Eyebrow>{new Date().toLocaleDateString("ko-KR", { month: "long", day: "numeric", weekday: "long" })}</Eyebrow>
         <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginTop: 2 }}>안녕하세요, {PATIENT.name}님</div>
-        <div style={{ fontSize: 13, color: C.sub, marginTop: 1 }}>{PATIENT.dx} · 목표 안압 {PATIENT.targetOD}/{PATIENT.targetOS} mmHg</div>
+        <div style={{ fontSize: 13, color: C.sub, marginTop: 1 }}>{PATIENT.dx} · 목표 안압 {targetOD}/{targetOS} mmHg</div>
       </div>
 
-      {(overOD || WATCH.irn) && (
+      {(overOD || WATCH.irn || overdue.length > 0 || upcoming.length > 0) && (
         <Card style={{ background: C.highSoft, border: "1px solid #F1CFC6", padding: 13 }}>
           <div className="flex items-start gap-2.5">
             <AlertTriangle size={18} color={C.high} style={{ marginTop: 1, flexShrink: 0 }} />
             <div style={{ fontSize: 13, color: "#8A3A2A", lineHeight: 1.5 }}>
-              {overOD && <div><b>우안(OD) 안압이 목표({PATIENT.targetOD})를 넘었습니다.</b> 점안 시간을 지키고 다음 측정값을 확인해 주세요.</div>}
-              {WATCH.irn && <div style={{ marginTop: overOD ? 4 : 0 }}>워치 <b>불규칙 맥박</b> 감지({WATCH.irnDate}). 심장내과 심전도(ECG) 확인을 권장합니다.</div>}
+              {overdue.map((m) => (
+                <div key={m.id} className="cursor-pointer" onClick={() => go("drops")}><b>{m.name} 점안 시간({m.time})이 지났습니다.</b> 지금 점안해 주세요.</div>
+              ))}
+              {upcoming.map((m) => (
+                <div key={m.id} className="cursor-pointer" style={{ marginTop: overdue.length ? 4 : 0 }} onClick={() => go("drops")}><b>{m.diff}분 후 {m.name}</b> 점안 예정({m.time})입니다.</div>
+              ))}
+              {overOD && <div style={{ marginTop: (overdue.length + upcoming.length) ? 4 : 0 }}><b>우안(OD) 안압이 목표({targetOD})를 넘었습니다.</b> 점안 시간을 지키고 다음 측정값을 확인해 주세요.</div>}
+              {WATCH.irn && <div style={{ marginTop: 4 }}>워치 <b>불규칙 맥박</b> 감지({WATCH.irnDate}). 심장내과 심전도(ECG) 확인을 권장합니다.</div>}
             </div>
           </div>
         </Card>
@@ -603,10 +744,31 @@ function HomeScreen({ meds, sessions, go }) {
       <Card style={{ padding: 16 }} className="cursor-pointer" onClick={() => go("iop")}>
         <SectionTitle icon={Eye} right={<span style={{ fontSize: 11.5, color: C.sub }}>오늘 {sessions.length}회 측정</span>}>최근 안압</SectionTitle>
         <div className="grid grid-cols-2 gap-2" style={{ marginTop: 4 }}>
-          <IOPGauge value={latest.od} target={PATIENT.targetOD} eye="OD" />
-          <IOPGauge value={latest.os} target={PATIENT.targetOS} eye="OS" />
+          <IOPGauge value={latest.od} target={targetOD} eye="OD" />
+          <IOPGauge value={latest.os} target={targetOS} eye="OS" />
         </div>
         <div className="flex items-center justify-center gap-1.5" style={{ marginTop: 8 }}><DeviceChip icon={Bluetooth} label="CVT200 연결됨" /><ChevronRight size={16} color={C.sub} /></div>
+      </Card>
+
+      {/* 점안 순응도 그래프 */}
+      <Card style={{ padding: 16 }}>
+        <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
+          <div className="flex items-center gap-2"><Droplets size={17} color={C.primary} strokeWidth={2.2} /><span style={{ fontSize: 15.5, fontWeight: 800, color: C.ink }}>점안 순응도</span></div>
+          <div className="flex items-baseline gap-1"><span style={{ fontSize: 22, fontWeight: 800, color: C.primary }}>{overall}</span><span style={{ fontSize: 13, color: C.sub, fontWeight: 700 }}>%</span></div>
+        </div>
+        <PeriodTabs value={adhPeriod} onChange={setAdhPeriod} options={ADH_PERIODS} />
+        <div style={{ marginTop: 10 }}>
+          <AdherenceChart data={adhData} height={150} today={adhPeriod === "오늘"} />
+        </div>
+        {adhPeriod === "오늘" ? (
+          <div className="flex items-center justify-center gap-4" style={{ marginTop: 6 }}>
+            <Legend c={C.low} t="완료" /><Legend c="#C9D4D3" t="예정/미완료" />
+          </div>
+        ) : (
+          <div className="flex items-center justify-center gap-4" style={{ marginTop: 6 }}>
+            <Legend c={C.primary} t="순응도(%)" /><Legend c={C.mid} t="80% 미만" /><Legend c={C.low} t="목표선 80%" soft />
+          </div>
+        )}
       </Card>
 
       <div className="grid grid-cols-2 gap-3">
@@ -638,7 +800,7 @@ function HomeScreen({ meds, sessions, go }) {
    ============================================================ */
 function nowHM() { const d = new Date(); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }
 
-function IOPScreen({ sessions, setSessions }) {
+function IOPScreen({ sessions, setSessions, targetOD, targetOS, setTargetOD, setTargetOS }) {
   const [mode, setMode] = useState("today");
   const [period, setPeriod] = useState("1개월");
   const [from, setFrom] = useState(RANGE_FROM_DEFAULT);
@@ -694,9 +856,35 @@ function IOPScreen({ sessions, setSessions }) {
           <DeviceChip icon={Bluetooth} label="CVT200 연결됨" />
         </div>
         <div className="grid grid-cols-2 gap-2">
-          <IOPGauge value={latest.od} target={PATIENT.targetOD} eye="OD" />
-          <IOPGauge value={latest.os} target={PATIENT.targetOS} eye="OS" />
+          <IOPGauge value={latest.od} target={targetOD} eye="OD" />
+          <IOPGauge value={latest.os} target={targetOS} eye="OS" />
         </div>
+      </Card>
+
+      {/* 목표 안압 설정 */}
+      <Card style={{ padding: 14 }}>
+        <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
+          <Gauge size={16} color={C.primary} />
+          <span style={{ fontSize: 13.5, fontWeight: 800, color: C.ink }}>목표 안압 설정</span>
+          <span style={{ fontSize: 10.5, color: C.sub }}>주치의와 상의한 값 입력</span>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          {[
+            { l: "우안 OD", v: targetOD, set: setTargetOD, col: C.od },
+            { l: "좌안 OS", v: targetOS, set: setTargetOS, col: C.os },
+          ].map((t) => (
+            <div key={t.l} className="flex items-center gap-2" style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: "8px 10px" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: t.col, width: 52, flexShrink: 0 }}>{t.l}</span>
+              <button onClick={() => t.set(Math.max(8, +(t.v - 1)))} className="cursor-pointer" style={{ border: `1px solid ${C.line}`, background: "#fff", color: C.sub, borderRadius: 8, width: 26, height: 26, fontSize: 15, fontWeight: 800, fontFamily: FONT, lineHeight: 1 }}>−</button>
+              <input type="number" min={8} max={30} value={t.v}
+                onChange={(e) => { const n = Number(e.target.value); if (!isNaN(n)) t.set(Math.min(30, Math.max(8, n))); }}
+                style={{ width: 44, textAlign: "center", border: "none", outline: "none", fontSize: 16, fontWeight: 800, color: C.ink, fontFamily: FONT, background: "transparent" }} />
+              <button onClick={() => t.set(Math.min(30, +(t.v + 1)))} className="cursor-pointer" style={{ border: `1px solid ${C.line}`, background: "#fff", color: C.sub, borderRadius: 8, width: 26, height: 26, fontSize: 15, fontWeight: 800, fontFamily: FONT, lineHeight: 1 }}>＋</button>
+              <span style={{ fontSize: 10.5, color: C.sub }}>mmHg</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 10.5, color: C.sub, marginTop: 8, lineHeight: 1.5 }}>목표값은 게이지·추세 목표선·초과 알림에 즉시 반영됩니다.</div>
       </Card>
 
       {/* mode toggle */}
@@ -716,11 +904,11 @@ function IOPScreen({ sessions, setSessions }) {
           <div style={{ height: 150, marginTop: 2 }}>
             <ResponsiveContainer width="100%" height="100%">
               <ScatterChart margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
-                <ReferenceArea y1={12} y2={PATIENT.targetOS + 1} fill={C.low} fillOpacity={0.08} />
+                <ReferenceArea y1={12} y2={targetOS + 1} fill={C.low} fillOpacity={0.08} />
                 <CartesianGrid stroke={C.line} vertical={false} />
                 <XAxis type="number" dataKey="tv" domain={[6, 22]} ticks={[6, 10, 14, 18, 22]} tickFormatter={(v) => `${v}시`} tick={{ fontSize: 10, fill: C.sub }} axisLine={false} tickLine={false} />
                 <YAxis type="number" domain={[12, 22]} tick={{ fontSize: 10, fill: C.sub }} axisLine={false} tickLine={false} width={34} />
-                <ReferenceLine y={PATIENT.targetOD} stroke={C.low} strokeDasharray="3 3" />
+                <ReferenceLine y={targetOD} stroke={C.low} strokeDasharray="3 3" />
                 <Tooltip contentStyle={{ borderRadius: 12, border: `1px solid ${C.line}`, fontSize: 12 }} formatter={(v, n) => [`${v} mmHg`, n === "od" ? "우안" : "좌안"]} labelFormatter={() => ""} />
                 <Scatter name="od" data={sessions} fill={C.odC} dataKey="od" />
                 <Scatter name="os" data={sessions} fill={C.osC} dataKey="os" />
@@ -731,7 +919,7 @@ function IOPScreen({ sessions, setSessions }) {
 
           <div className="flex flex-col" style={{ marginTop: 8 }}>
             {[...sessions].reverse().map((s) => (
-              <MeasureRow key={s.id} s={s} />
+              <MeasureRow key={s.id} s={s} targetOD={targetOD} />
             ))}
           </div>
         </Card>
@@ -747,7 +935,7 @@ function IOPScreen({ sessions, setSessions }) {
             onFrom={(v) => { setFrom(v); setPeriod("custom"); }}
             onTo={(v) => { setTo(v); setPeriod("custom"); }} />
           <div style={{ marginTop: 12 }}>
-            <TrendChart data={trendPts} height={190} targetOS={PATIENT.targetOS} />
+            <TrendChart data={trendPts} height={190} targetOS={targetOS} />
           </div>
           <TrendLegend />
           <div style={{ fontSize: 11, color: C.sub, marginTop: 8, lineHeight: 1.5 }}>
@@ -759,8 +947,8 @@ function IOPScreen({ sessions, setSessions }) {
   );
 }
 
-function MeasureRow({ s }) {
-  const over = s.od > PATIENT.targetOD;
+function MeasureRow({ s, targetOD }) {
+  const over = s.od > targetOD;
   return (
     <div className="flex items-center justify-between" style={{ padding: "10px 0", borderBottom: `1px solid ${C.line}` }}>
       <div className="flex items-center gap-2">
@@ -778,12 +966,13 @@ function MeasureRow({ s }) {
 /* ============================================================
    DROPS — 약 선택/수기 입력
    ============================================================ */
-function DropsScreen({ meds, setMeds }) {
+function DropsScreen({ meds, setMeds, nowMin, setNowMin, upcoming = [], overdue = [], push }) {
   const [adding, setAdding] = useState(false);
-  const toggle = (id) => setMeds((ms) => ms.map((m) => m.id === id ? { ...m, taken: !m.taken, at: !m.taken ? nowHM() : undefined } : m));
+  const toggle = (id) => setMeds((ms) => ms.map((m) => m.id === id ? { ...m, taken: !m.taken, at: !m.taken ? minToHM(nowMin) : undefined } : m));
   const removeMed = (id) => setMeds((ms) => ms.filter((m) => m.id !== id));
   const scheduled = meds.filter((m) => m.time !== "필요 시");
   const rate = scheduled.length ? Math.round((scheduled.filter((m) => m.taken).length / scheduled.length) * 100) : 0;
+  const sorted = [...meds].sort((a, b) => (a.time === "필요 시" ? 1 : b.time === "필요 시" ? -1 : a.time.localeCompare(b.time)));
 
   if (adding) return <AddMed onDone={(m) => { if (m) setMeds((ms) => [...ms, m]); setAdding(false); }} />;
 
@@ -794,6 +983,21 @@ function DropsScreen({ meds, setMeds }) {
         <DeviceChip icon={Bluetooth} label="스마트 점안 디바이스" />
       </div>
 
+      {push && <PushToggleCard push={push} />}
+
+      {/* 점안 알림 (30분 전 · 시간 초과) */}
+      {(overdue.length > 0 || upcoming.length > 0) && (
+        <Card style={{ background: overdue.length ? C.highSoft : C.midSoft, border: `1px solid ${overdue.length ? "#F1CFC6" : "#EEDDB4"}`, padding: 13 }}>
+          <div className="flex items-start gap-2.5">
+            <Bell size={17} color={overdue.length ? C.high : C.mid} style={{ marginTop: 1, flexShrink: 0 }} />
+            <div style={{ fontSize: 12.5, color: overdue.length ? "#8A3A2A" : "#8A6414", lineHeight: 1.55 }}>
+              {overdue.map((m) => <div key={m.id}><b>{m.name}</b> — 예정 시간({m.time})이 <b>{m.late}분 지났습니다.</b> 지금 점안하고 체크해 주세요.</div>)}
+              {upcoming.map((m) => <div key={m.id}><b>{m.name}</b> — <b>{m.diff}분 후</b>({m.time}) 점안 예정입니다.</div>)}
+            </div>
+          </div>
+        </Card>
+      )}
+
       <Card style={{ padding: 16 }}>
         <div className="flex items-center justify-between">
           <div><div style={{ fontSize: 12.5, color: C.sub, fontWeight: 600 }}>오늘 순응도</div><div className="flex items-baseline gap-1"><span style={{ fontSize: 30, fontWeight: 800, color: C.primary }}>{rate}</span><span style={{ fontSize: 16, color: C.sub, fontWeight: 700 }}>%</span></div></div>
@@ -803,11 +1007,13 @@ function DropsScreen({ meds, setMeds }) {
       </Card>
 
       <div className="flex flex-col gap-2.5">
-        {meds.map((m) => (
-          <Card key={m.id} style={{ padding: 14, opacity: m.taken ? 0.72 : 1 }}>
+        {sorted.map((m) => {
+          const st = medStatus(m, nowMin);
+          return (
+          <Card key={m.id} style={{ padding: 14, opacity: m.taken ? 0.72 : 1, border: st ? `1.5px solid ${st.c}55` : `1px solid ${C.line}` }}>
             <div className="flex items-center gap-3">
-              <div onClick={() => toggle(m.id)} className="cursor-pointer flex items-center justify-center flex-shrink-0" style={{ width: 40, height: 40, borderRadius: 13, background: m.taken ? C.low : C.mint, color: m.taken ? "#fff" : C.primary }}>
-                {m.taken ? <Check size={22} strokeWidth={3} /> : <Droplets size={20} />}
+              <div onClick={() => toggle(m.id)} className="cursor-pointer flex items-center justify-center flex-shrink-0" style={{ width: 40, height: 40, borderRadius: 13, background: m.taken ? C.low : st ? st.soft : C.mint, color: m.taken ? "#fff" : st ? st.c : C.primary }}>
+                {m.taken ? <Check size={22} strokeWidth={3} /> : st && st.kind === "late" ? <Bell size={19} /> : <Droplets size={20} />}
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
@@ -816,21 +1022,34 @@ function DropsScreen({ meds, setMeds }) {
                   <span style={{ fontSize: 11, color: C.sub }}>{m.eye}</span>
                 </div>
                 <div style={{ fontSize: 12, color: C.sub, marginTop: 2 }}>{m.ingr}{m.maker ? ` · ${m.maker}` : ""} · {m.freq}</div>
+                {st && <div style={{ fontSize: 11, fontWeight: 700, color: st.c, marginTop: 3 }}>{st.kind === "soon" ? "⏰ " : "🔔 "}{st.label}</div>}
               </div>
               <div className="text-right flex-shrink-0">
-                <div style={{ fontSize: 14, fontWeight: 800, color: m.taken ? C.low : C.ink, fontVariantNumeric: "tabular-nums" }}>{m.time}</div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: m.taken ? C.low : st ? st.c : C.ink, fontVariantNumeric: "tabular-nums" }}>{m.time}</div>
                 <div style={{ fontSize: 11, color: C.sub, marginTop: 1 }}>{m.taken ? `${m.at || m.time} 완료` : m.src === "device" ? "자동 감지" : "수기 입력"}</div>
               </div>
               <Trash2 size={16} color={C.grey} className="cursor-pointer flex-shrink-0" onClick={() => removeMed(m.id)} />
             </div>
           </Card>
-        ))}
+        ); })}
       </div>
 
       <div onClick={() => setAdding(true)} className="flex items-center justify-center gap-2 cursor-pointer" style={{ padding: "13px 0", border: `1.5px dashed ${C.mintDeep}`, borderRadius: 16, color: C.primary, fontWeight: 700, fontSize: 13.5 }}>
-        <Plus size={17} /> 약 추가 · 종류 선택 또는 직접 입력
+        <Plus size={17} /> 약 추가 · 어떤 약을 몇 시에 넣을지 입력
       </div>
-      <div style={{ fontSize: 11.5, color: C.sub, textAlign: "center", lineHeight: 1.5 }}>스마트 점안 디바이스가 자동 기록하며, 미사용 시 체크로 수기 입력할 수 있어요.</div>
+      <div style={{ fontSize: 11.5, color: C.sub, textAlign: "center", lineHeight: 1.5 }}>
+        예정 시간 <b>30분 전</b>에 미리 알림, 예정 시간까지 점안하지 않으면 <b>자동 알람</b>이 울립니다.
+      </div>
+
+      {/* 데모용 현재 시각 조정 */}
+      <Card style={{ padding: 12, background: "#F7FBFA" }}>
+        <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
+          <Clock size={14} color={C.sub} />
+          <span style={{ fontSize: 11.5, fontWeight: 700, color: C.sub }}>현재 시각(데모)</span>
+          <input type="time" value={minToHM(nowMin)} onChange={(e) => { const [h, mm] = e.target.value.split(":").map(Number); if (!isNaN(h)) setNowMin(h * 60 + mm); }} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: "5px 8px", fontSize: 12, fontFamily: FONT, color: C.ink, outline: "none", background: "#fff" }} />
+          <span style={{ fontSize: 10.5, color: C.sub }}>시각을 바꿔 30분 전 알림·시간 초과 알람 동작을 확인할 수 있어요.</span>
+        </div>
+      </Card>
     </div>
   );
 }
@@ -909,6 +1128,7 @@ function AddMed({ onDone }) {
           <Field label="횟수"><ChoiceRow value={freq} set={setFreq} opts={["1일 1회", "1일 2회", "1일 3회", "필요 시"]} /></Field>
           <div style={{ height: 10 }} />
           <Field label="시간"><input type="time" value={time} onChange={(e) => setTime(e.target.value)} style={inp} /></Field>
+          <div style={{ fontSize: 10.5, color: C.sub, marginTop: 8, lineHeight: 1.5 }}>설정한 시간 <b>30분 전 알림</b> · 시간이 지나면 <b>자동 알람</b>이 전송됩니다.</div>
           {chosen.dose === "일회용" && <div style={{ fontSize: 11, color: C.sub, marginTop: 8, lineHeight: 1.5 }}>일회용(BFS)은 스마트 점안 디바이스 자동 감지가 어려워 <b>수기 입력</b>으로 기록됩니다.</div>}
         </Card>
       )}
@@ -926,46 +1146,101 @@ function ChoiceRow({ value, set, opts }) {
 /* ============================================================
    HEALTH (watch)
    ============================================================ */
+const WATCH_METRICS = [
+  { cat: "활동", icon: Footprints, items: [
+    { k: "걸음 수", v: "6,420", u: "걸음", plat: "both", link: "Q9" },
+    { k: "이동 거리", v: "4.8", u: "km", plat: "both" },
+    { k: "오른 층수", v: "9", u: "층", plat: "both" },
+    { k: "활동 칼로리", v: "412", u: "kcal", plat: "both" },
+    { k: "운동 시간(중강도↑)", v: "26", u: "분", plat: "both", link: "Q9" },
+    { k: "서 있는 시간", v: "9", u: "시간", plat: "apple" },
+    { k: "VO₂max (심폐체력)", v: "31.2", u: "mL/kg·min", plat: "both" },
+  ]},
+  { cat: "심장", icon: HeartPulse, items: [
+    { k: "현재 심박수", v: "72", u: "bpm", plat: "both" },
+    { k: "안정 시 심박수", v: "61", u: "bpm", plat: "both" },
+    { k: "심박 범위(오늘)", v: "54–118", u: "bpm", plat: "both" },
+    { k: "심박변이도 (HRV)", v: "38", u: "ms", plat: "both" },
+    { k: "불규칙 맥박 알림 (IRN)", v: "감지 6/30", u: "", plat: "both", alert: true, link: "Q11" },
+    { k: "심전도 (ECG) 기록", v: "미기록", u: "", plat: "both" },
+    { k: "고·저심박 알림", v: "없음", u: "", plat: "both" },
+  ]},
+  { cat: "수면", icon: Moon, items: [
+    { k: "총 수면 시간", v: "6시간 40분", u: "", plat: "both", link: "Q10" },
+    { k: "깊은 수면", v: "58", u: "분", plat: "both" },
+    { k: "렘(REM) 수면", v: "1시간 12분", u: "", plat: "both" },
+    { k: "얕은 수면", v: "4시간 05분", u: "", plat: "both" },
+    { k: "깬 시간", v: "25", u: "분", plat: "both" },
+    { k: "수면 중 혈중산소 (SpO₂)", v: "94–98", u: "%", plat: "both" },
+    { k: "수면 중 호흡수", v: "14.2", u: "회/분", plat: "both" },
+    { k: "코골이 감지", v: "27분", u: "", plat: "galaxy", link: "Q2" },
+    { k: "수면 점수", v: "71 · 보통", u: "", plat: "both", link: "Q10" },
+  ]},
+  { cat: "신체·기타", icon: Activity, items: [
+    { k: "혈중산소 (SpO₂, 주간)", v: "97", u: "%", plat: "both" },
+    { k: "피부 온도 변화(야간)", v: "+0.3", u: "°C", plat: "both" },
+    { k: "스트레스 지수", v: "42 · 보통", u: "", plat: "galaxy" },
+    { k: "체성분 (BIA)", v: "골격근 24.1kg · 체지방 28%", u: "", plat: "galaxy" },
+    { k: "혈압(커프 보정)", v: "128/84", u: "mmHg", plat: "galaxy", link: "Q3·Q4" },
+    { k: "마음챙김·호흡 세션", v: "5", u: "분", plat: "both" },
+    { k: "낙상 감지", v: "정상", u: "", plat: "both" },
+    { k: "소음 노출", v: "68", u: "dB", plat: "apple" },
+  ]},
+];
+function PlatBadge({ plat }) {
+  const map = { both: { t: "Apple·Galaxy", c: C.sub, bg: "#F0F4F3" }, apple: { t: "Apple 전용", c: "#555", bg: "#EEEEEE" }, galaxy: { t: "Galaxy 전용", c: "#1259A8", bg: "#E7F0FA" } };
+  const m = map[plat] || map.both;
+  return <span style={{ fontSize: 9, fontWeight: 700, color: m.c, background: m.bg, padding: "1px 6px", borderRadius: 99, whiteSpace: "nowrap" }}>{m.t}</span>;
+}
 function HealthScreen() {
-  const stepPct = Math.min(100, Math.round((WATCH.steps / WATCH.stepGoal) * 100));
   return (
     <div className="flex flex-col gap-3.5">
       <div className="flex items-center justify-between">
         <div><Eyebrow color={C.primary}>워치 연동 · 건강</Eyebrow><div style={{ fontSize: 21, fontWeight: 800, color: C.ink, marginTop: 2 }}>건강 데이터</div></div>
         <DeviceChip icon={Watch} label={WATCH.device} />
       </div>
-      <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.5, marginTop: -6 }}>갤럭시·애플워치의 활동·수면·심박 리듬을 자동 수집합니다. 연동 항목은 문진 자동값으로 우선 반영돼요.</div>
-
-      <Card style={{ padding: 16 }}>
-        <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
-          <div className="flex items-center gap-2"><Footprints size={18} color={C.primary} /><span style={{ fontSize: 14.5, fontWeight: 800, color: C.ink }}>활동량 (걸음 수)</span></div>
-          <span style={{ fontSize: 11, color: C.gold, background: C.goldSoft, padding: "3px 8px", borderRadius: 999, fontWeight: 700 }}>Q9 자동 반영</span>
-        </div>
-        <div className="flex items-baseline gap-1.5"><span style={{ fontSize: 30, fontWeight: 800, color: C.primary, fontVariantNumeric: "tabular-nums" }}>{WATCH.steps.toLocaleString()}</span><span style={{ fontSize: 14, color: C.sub, fontWeight: 600 }}>/ {WATCH.stepGoal.toLocaleString()} 걸음</span></div>
-        <div style={{ height: 8, background: C.mint, borderRadius: 99, marginTop: 9, overflow: "hidden" }}><div style={{ width: `${stepPct}%`, height: "100%", background: C.aqua, borderRadius: 99 }} /></div>
-        <div style={{ fontSize: 11.5, color: C.sub, marginTop: 7, lineHeight: 1.5 }}>유산소 활동은 안압을 낮추고 눈 혈류를 개선합니다. 주 평균 <b>7,100걸음</b>.</div>
-      </Card>
-
-      <div className="grid grid-cols-2 gap-3">
-        <Card style={{ padding: 15 }}>
-          <div className="flex items-center gap-1.5" style={{ marginBottom: 8 }}><Moon size={16} color={C.primary} /><span style={{ fontSize: 13.5, fontWeight: 800, color: C.ink }}>수면</span></div>
-          <div className="flex items-baseline gap-1"><span style={{ fontSize: 24, fontWeight: 800, color: C.primary }}>{WATCH.sleepH}</span><span style={{ fontSize: 13, color: C.sub, fontWeight: 600 }}>시간</span><span style={{ fontSize: 20, fontWeight: 800, color: C.primary, marginLeft: 2 }}>{WATCH.sleepM}</span><span style={{ fontSize: 13, color: C.sub, fontWeight: 600 }}>분</span></div>
-          <div style={{ fontSize: 11.5, color: C.sub, marginTop: 3 }}>질 {WATCH.sleepQuality} · <span style={{ color: C.gold, fontWeight: 700 }}>Q10 반영</span></div>
-        </Card>
-        <Card style={{ padding: 15 }}>
-          <div className="flex items-center gap-1.5" style={{ marginBottom: 8 }}><HeartPulse size={16} color={C.primary} /><span style={{ fontSize: 13.5, fontWeight: 800, color: C.ink }}>심박 리듬</span></div>
-          <div className="flex items-baseline gap-1"><span style={{ fontSize: 24, fontWeight: 800, color: C.primary }}>{WATCH.hr}</span><span style={{ fontSize: 13, color: C.sub, fontWeight: 600 }}>bpm</span></div>
-          <div style={{ fontSize: 11.5, color: WATCH.irn ? C.high : C.low, marginTop: 3, fontWeight: 700 }}>{WATCH.irn ? "불규칙 맥박 감지" : "정상 리듬"}</div>
-        </Card>
+      <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.5, marginTop: -6 }}>
+        Apple Watch(HealthKit)·Galaxy Watch(Samsung Health)에서 수집 가능한 지표를 모두 표시합니다. <span style={{ color: C.gold, fontWeight: 700 }}>Q 배지</span>가 붙은 항목은 문진 자동값으로 우선 반영돼요.
       </div>
 
       {WATCH.irn && (
-        <Card style={{ padding: 14, background: C.highSoft, border: "1px solid #F1CFC6" }}>
-          <div className="flex items-start gap-2.5"><AlertTriangle size={17} color={C.high} style={{ marginTop: 1, flexShrink: 0 }} />
-            <div style={{ fontSize: 12.5, color: "#8A3A2A", lineHeight: 1.55 }}><b>불규칙 맥박 알림(IRN)</b>이 {WATCH.irnDate}에 감지되어 <b>문진 Q11</b>에 자동 병기되었습니다. 선별 신호이며 확진이 아니므로 심장내과 <b>심전도(ECG)</b> 확인을 권장합니다.</div>
+        <Card style={{ padding: 13, background: C.highSoft, border: "1px solid #F1CFC6" }}>
+          <div className="flex items-start gap-2.5"><AlertTriangle size={16} color={C.high} style={{ marginTop: 1, flexShrink: 0 }} />
+            <div style={{ fontSize: 12, color: "#8A3A2A", lineHeight: 1.5 }}><b>불규칙 맥박 알림(IRN)</b> {WATCH.irnDate} 감지 → <b>문진 Q11</b> 자동 병기. 선별 신호이며 확진이 아니므로 심장내과 <b>심전도(ECG)</b> 확인을 권장합니다.</div>
           </div>
         </Card>
       )}
+
+      {WATCH_METRICS.map((g) => (
+        <Card key={g.cat} style={{ padding: 15 }}>
+          <div className="flex items-center gap-2" style={{ marginBottom: 6 }}>
+            <g.icon size={16} color={C.primary} strokeWidth={2.2} />
+            <span style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>{g.cat}</span>
+            <span style={{ fontSize: 10.5, color: C.sub }}>{g.items.length}개 지표</span>
+          </div>
+          <div className="flex flex-col">
+            {g.items.map((it, i) => (
+              <div key={it.k} className="flex items-center gap-2" style={{ padding: "8px 0", borderBottom: i < g.items.length - 1 ? `1px solid ${C.line}` : "none" }}>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5" style={{ flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: C.ink }}>{it.k}</span>
+                    <PlatBadge plat={it.plat} />
+                    {it.link && <span style={{ fontSize: 9, color: C.gold, background: C.goldSoft, padding: "1px 6px", borderRadius: 99, fontWeight: 800 }}>{it.link} 반영</span>}
+                  </div>
+                </div>
+                <div className="text-right flex-shrink-0">
+                  <span style={{ fontSize: 13.5, fontWeight: 800, color: it.alert ? C.high : C.primary, fontVariantNumeric: "tabular-nums" }}>{it.v}</span>
+                  {it.u && <span style={{ fontSize: 10.5, color: C.sub, marginLeft: 3 }}>{it.u}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ))}
+
+      <div style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.55, padding: "0 2px" }}>
+        일부 지표는 기기 모델·국가·OS 버전에 따라 제공 여부가 다를 수 있습니다. 혈압(Galaxy)은 커프 보정이 필요하며, ECG·IRN은 선별 목적으로 확진 진단이 아닙니다.
+      </div>
     </div>
   );
 }
@@ -1148,29 +1423,43 @@ function PatientApp() {
   const [tab, setTab] = useState("home");
   const [meds, setMeds] = useState(MEDS_INIT);
   const [sessions, setSessions] = useState(SESSIONS_INIT);
+  const [targetOD, setTargetOD] = useState(PATIENT.targetOD);
+  const [targetOS, setTargetOS] = useState(PATIENT.targetOS);
+  // 현재 시각(분). 실제 시각으로 시작하며 1분마다 갱신. 데모용으로 조정 가능.
+  const [nowMin, setNowMin] = useState(() => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); });
+  useEffect(() => { const id = setInterval(() => { const d = new Date(); setNowMin(d.getHours() * 60 + d.getMinutes()); }, 60000); return () => clearInterval(id); }, []);
+  const { upcoming, overdue } = medAlerts(meds, nowMin);
+  const push = usePushNotifications(upcoming, overdue);
+  const alertCount = upcoming.length + overdue.length;
   return (
     <div style={{ width: 380, maxWidth: "100%", height: 800, background: C.bg, borderRadius: 40, border: "10px solid #10262B", overflow: "hidden", position: "relative", boxShadow: "0 30px 70px -30px rgba(8,52,62,.5)" }}>
       <div className="flex items-center justify-between" style={{ padding: "13px 24px 6px", fontSize: 12.5, fontWeight: 700, color: C.ink }}>
-        <span>9:41</span><div className="flex items-center gap-1.5" style={{ color: C.primary }}><Bluetooth size={13} /><Watch size={13} /><span style={{ fontSize: 11 }}>●●●</span></div>
+        <span>{minToHM(nowMin)}</span><div className="flex items-center gap-1.5" style={{ color: C.primary }}><Bluetooth size={13} /><Watch size={13} /><span style={{ fontSize: 11 }}>●●●</span></div>
       </div>
       <div className="flex items-center justify-between" style={{ padding: "2px 22px 10px" }}>
         <div className="flex items-center gap-2">
           <div className="flex items-center justify-center" style={{ width: 30, height: 30, borderRadius: 9, background: C.primary }}><Eye size={17} color="#fff" /></div>
           <div><div style={{ fontSize: 15, fontWeight: 800, color: C.ink, lineHeight: 1 }}>안압케어</div><div style={{ fontSize: 9.5, color: C.sub, letterSpacing: "0.05em" }}>CVT200 · 녹내장 통합관리</div></div>
         </div>
-        <div style={{ position: "relative" }}><Bell size={20} color={C.sub} /><span style={{ position: "absolute", top: -2, right: -2, width: 8, height: 8, borderRadius: 99, background: C.high }} /></div>
+        <div className="cursor-pointer" style={{ position: "relative" }} onClick={() => setTab("drops")}>
+          <Bell size={20} color={alertCount ? C.high : C.sub} />
+          {alertCount > 0 && (
+            <span className="flex items-center justify-center" style={{ position: "absolute", top: -5, right: -6, minWidth: 15, height: 15, padding: "0 3px", borderRadius: 99, background: C.high, color: "#fff", fontSize: 9.5, fontWeight: 800 }}>{alertCount}</span>
+          )}
+        </div>
       </div>
       <div style={{ height: 656, overflowY: "auto", padding: "6px 18px 20px" }}>
-        {tab === "home" && <HomeScreen meds={meds} sessions={sessions} go={setTab} />}
-        {tab === "iop" && <IOPScreen sessions={sessions} setSessions={setSessions} />}
-        {tab === "drops" && <DropsScreen meds={meds} setMeds={setMeds} />}
+        {tab === "home" && <HomeScreen meds={meds} sessions={sessions} go={setTab} targetOD={targetOD} targetOS={targetOS} upcoming={upcoming} overdue={overdue} />}
+        {tab === "iop" && <IOPScreen sessions={sessions} setSessions={setSessions} targetOD={targetOD} targetOS={targetOS} setTargetOD={setTargetOD} setTargetOS={setTargetOS} />}
+        {tab === "drops" && <DropsScreen meds={meds} setMeds={setMeds} nowMin={nowMin} setNowMin={setNowMin} upcoming={upcoming} overdue={overdue} push={push} />}
         {tab === "survey" && <SurveyScreen />}
         {tab === "health" && <HealthScreen />}
       </div>
       <div className="flex items-center justify-around" style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 66, background: "rgba(255,255,255,.94)", borderTop: `1px solid ${C.line}`, backdropFilter: "blur(8px)" }}>
-        {TABS.map((t) => { const on = tab === t.id; return (
-          <div key={t.id} onClick={() => setTab(t.id)} className="flex flex-col items-center gap-1 cursor-pointer" style={{ flex: 1, paddingTop: 4 }}>
+        {TABS.map((t) => { const on = tab === t.id; const showDot = t.id === "drops" && alertCount > 0; return (
+          <div key={t.id} onClick={() => setTab(t.id)} className="flex flex-col items-center gap-1 cursor-pointer" style={{ flex: 1, paddingTop: 4, position: "relative" }}>
             <t.icon size={21} color={on ? C.primary : C.sub} strokeWidth={on ? 2.5 : 2} /><span style={{ fontSize: 10.5, fontWeight: on ? 800 : 600, color: on ? C.primary : C.sub }}>{t.label}</span>
+            {showDot && <span style={{ position: "absolute", top: 2, right: "50%", marginRight: -16, width: 7, height: 7, borderRadius: 99, background: C.high }} />}
           </div>
         ); })}
       </div>
