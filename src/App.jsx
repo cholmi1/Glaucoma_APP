@@ -7,7 +7,7 @@ import {
   Eye, Droplets, Droplet, ClipboardList, Activity, Home, Watch, Bluetooth, Check, ChevronRight,
   ChevronLeft, AlertTriangle, AlertCircle, Bell, Plus, Moon, Footprints, HeartPulse, Coffee, Wine,
   Leaf, Wind, Clock, Stethoscope, Smartphone, CheckCircle2, Send, User, Sparkles, Gauge, RefreshCw,
-  ShieldCheck, Pill, Bed, Dumbbell, Cigarette, Waves, X, Trash2, Info, ListChecks, Search,
+  ShieldCheck, Pill, Bed, Dumbbell, Cigarette, Waves, X, Trash2, Info, ListChecks, Search, CalendarDays,
 } from "lucide-react";
 
 /* ============================================================
@@ -172,19 +172,47 @@ function adhIopDataRange(fromStr, toStr) {
   return out;
 }
 const _dateInp = { border: `1px solid ${C.line}`, borderRadius: 8, padding: "5px 8px", fontSize: 11.5, fontFamily: FONT, color: C.ink, outline: "none", background: "#fff" };
-function PeriodPicker({ period, from, to, onPreset, onFrom, onTo }) {
+function PeriodPicker({ period, from, to, onPreset, onFrom, onTo, options = PERIODS, resetTo = "1개월" }) {
   const custom = period === "custom";
   return (
     <div className="flex flex-col gap-2">
-      <PeriodTabs value={period} onChange={onPreset} />
-      <div className="flex items-center gap-2" style={{ flexWrap: "wrap", padding: "6px 9px", borderRadius: 10, border: `1px solid ${custom ? C.primary : C.line}`, background: custom ? C.mint : "#fff" }}>
-        <span style={{ fontSize: 11, color: custom ? C.primary : C.sub, fontWeight: 800 }}>직접 선택</span>
-        <input type="date" value={from} max={to} onChange={(e) => onFrom(e.target.value)} style={_dateInp} />
-        <span style={{ color: C.sub, fontSize: 12 }}>~</span>
-        <input type="date" value={to} min={from} onChange={(e) => onTo(e.target.value)} style={_dateInp} />
+      <div className="flex" style={{ gap: 4, flexWrap: "wrap" }}>
+        {options.map((p) => (
+          <button key={p} onClick={() => onPreset(p)} className="cursor-pointer"
+            style={{ border: `1px solid ${period === p ? C.primary : C.line}`, background: period === p ? C.primary : "#fff", color: period === p ? "#fff" : C.sub, borderRadius: 999, padding: "5px 11px", fontSize: 11.5, fontWeight: 700, fontFamily: FONT }}>{p}</button>
+        ))}
+        <button onClick={() => onPreset(custom ? resetTo : "custom")} className="cursor-pointer inline-flex items-center gap-1"
+          style={{ border: `1px solid ${custom ? C.primary : C.line}`, background: custom ? C.primary : "#fff", color: custom ? "#fff" : C.sub, borderRadius: 999, padding: "5px 11px", fontSize: 11.5, fontWeight: 700, fontFamily: FONT }}>
+          <CalendarDays size={12} /> 직접 선택
+        </button>
       </div>
+      {custom && (
+        <div className="flex items-center gap-2" style={{ flexWrap: "wrap", padding: "8px 10px", borderRadius: 10, border: `1px solid ${C.primary}`, background: C.mint }}>
+          <span style={{ fontSize: 11, color: C.primary, fontWeight: 800 }}>기간 지정</span>
+          <input type="date" value={from} max={to} onChange={(e) => onFrom(e.target.value)} style={_dateInp} />
+          <span style={{ color: C.sub, fontSize: 12 }}>~</span>
+          <input type="date" value={to} min={from} onChange={(e) => onTo(e.target.value)} style={_dateInp} />
+        </div>
+      )}
     </div>
   );
+}
+function adherenceDataRange(fromStr, toStr) {
+  const from = new Date(fromStr), to = new Date(toStr);
+  if (isNaN(from) || isNaN(to) || to <= from) return null;
+  const days = Math.round((to - from) / 86400000);
+  const c = _spanCfg(days);
+  const n = Math.max(2, Math.min(24, Math.floor(days / c.step) + 1));
+  const base = _hash("adh" + fromStr + toStr);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const date = new Date(from); date.setDate(date.getDate() + Math.round((i * days) / (n - 1)));
+    const r = _rnd(base + i);
+    const low = r < 0.22;
+    const pct = low ? Math.round(55 + _rnd(base + 30 + i) * 20) : Math.round(90 + _rnd(base + 60 + i) * 10);
+    out.push({ d: _fmt(date, c.kind), pct: Math.min(100, pct), taken: pct >= 80 });
+  }
+  return out;
 }
 function TrendTip({ active, payload, label }) {
   if (!active || !payload || !payload.length) return null;
@@ -227,11 +255,11 @@ function adherenceData(period, meds) {
 function TrendChart({ data, height = 190, targetOS = 16 }) {
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <ComposedChart data={data} margin={{ top: 6, right: 6, left: -18, bottom: 0 }}>
+      <ComposedChart data={data} margin={{ top: 6, right: 6, left: 0, bottom: 0 }}>
         <ReferenceArea y1={12} y2={targetOS + 1} fill={C.low} fillOpacity={0.07} />
         <CartesianGrid stroke={C.line} vertical={false} />
         <XAxis dataKey="d" interval="preserveStartEnd" minTickGap={16} tick={{ fontSize: 9.5, fill: C.sub }} axisLine={false} tickLine={false} />
-        <YAxis domain={[10, 22]} tick={{ fontSize: 10, fill: C.sub }} axisLine={false} tickLine={false} width={30} />
+        <YAxis domain={[10, 22]} tick={{ fontSize: 10, fill: C.sub }} axisLine={false} tickLine={false} width={38} tickMargin={4} />
         <Tooltip content={<TrendTip />} />
         <Area dataKey="odRange" stroke="none" fill={C.od} fillOpacity={0.13} isAnimationActive={false} />
         <Area dataKey="osRange" stroke="none" fill={C.os} fillOpacity={0.13} isAnimationActive={false} />
@@ -260,10 +288,10 @@ function DayStat({ eye, avg, min, max, col }) {
 function AdherenceChart({ data, height = 150, today }) {
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <BarChart data={data} margin={{ top: 6, right: 6, left: today ? -30 : -22, bottom: 0 }}>
+      <BarChart data={data} margin={{ top: 6, right: 6, left: 0, bottom: 0 }}>
         <CartesianGrid stroke={C.line} vertical={false} />
         <XAxis dataKey="d" interval={today ? 0 : "preserveStartEnd"} minTickGap={14} tick={{ fontSize: 9.5, fill: C.sub }} axisLine={false} tickLine={false} />
-        <YAxis hide={today} domain={[0, 100]} ticks={[0, 50, 100]} tick={{ fontSize: 9.5, fill: C.sub }} axisLine={false} tickLine={false} width={26} />
+        <YAxis domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} tickFormatter={(v) => `${v}%`} tick={{ fontSize: 9.5, fill: C.sub }} axisLine={false} tickLine={false} width={40} tickMargin={4} />
         {!today && <ReferenceLine y={80} stroke={C.low} strokeDasharray="3 3" />}
         {!today && <Tooltip contentStyle={{ borderRadius: 12, border: `1px solid ${C.line}`, fontSize: 12 }} formatter={(v) => [`${v}%`, "순응도"]} />}
         <Bar dataKey="pct" radius={[3, 3, 0, 0]} barSize={today ? 30 : 12} isAnimationActive={false}>
@@ -707,11 +735,13 @@ function IOPGauge({ value, target, eye }) {
    ============================================================ */
 function HomeScreen({ meds, sessions, go, targetOD, targetOS, upcoming = [], overdue = [] }) {
   const [adhPeriod, setAdhPeriod] = useState("오늘");
+  const [adhFrom, setAdhFrom] = useState(RANGE_FROM_DEFAULT);
+  const [adhTo, setAdhTo] = useState(RANGE_TO_DEFAULT);
   const latest = sessions[sessions.length - 1];
   const overOD = latest.od > targetOD;
   const scheduled = meds.filter((m) => m.time !== "필요 시");
   const done = scheduled.filter((m) => m.taken).length;
-  const adhData = adherenceData(adhPeriod, meds);
+  const adhData = adhPeriod === "custom" ? (adherenceDataRange(adhFrom, adhTo) || adherenceData("1개월", meds)) : adherenceData(adhPeriod, meds);
   const overall = adhPeriod === "오늘"
     ? (scheduled.length ? Math.round((done / scheduled.length) * 100) : 0)
     : Math.round(adhData.reduce((a, b) => a + b.pct, 0) / (adhData.length || 1));
@@ -756,7 +786,10 @@ function HomeScreen({ meds, sessions, go, targetOD, targetOS, upcoming = [], ove
           <div className="flex items-center gap-2"><Droplets size={17} color={C.primary} strokeWidth={2.2} /><span style={{ fontSize: 15.5, fontWeight: 800, color: C.ink }}>점안 순응도</span></div>
           <div className="flex items-baseline gap-1"><span style={{ fontSize: 22, fontWeight: 800, color: C.primary }}>{overall}</span><span style={{ fontSize: 13, color: C.sub, fontWeight: 700 }}>%</span></div>
         </div>
-        <PeriodTabs value={adhPeriod} onChange={setAdhPeriod} options={ADH_PERIODS} />
+        <PeriodPicker period={adhPeriod} from={adhFrom} to={adhTo} options={ADH_PERIODS} resetTo="오늘"
+          onPreset={setAdhPeriod}
+          onFrom={(v) => { setAdhFrom(v); setAdhPeriod("custom"); }}
+          onTo={(v) => { setAdhTo(v); setAdhPeriod("custom"); }} />
         <div style={{ marginTop: 10 }}>
           <AdherenceChart data={adhData} height={150} today={adhPeriod === "오늘"} />
         </div>
@@ -868,19 +901,21 @@ function IOPScreen({ sessions, setSessions, targetOD, targetOS, setTargetOD, set
           <span style={{ fontSize: 13.5, fontWeight: 800, color: C.ink }}>목표 안압 설정</span>
           <span style={{ fontSize: 10.5, color: C.sub }}>주치의와 상의한 값 입력</span>
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-2.5">
           {[
             { l: "우안 OD", v: targetOD, set: setTargetOD, col: C.od },
             { l: "좌안 OS", v: targetOS, set: setTargetOS, col: C.os },
           ].map((t) => (
-            <div key={t.l} className="flex items-center gap-2" style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: "8px 10px" }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: t.col, width: 52, flexShrink: 0 }}>{t.l}</span>
-              <button onClick={() => t.set(Math.max(8, +(t.v - 1)))} className="cursor-pointer" style={{ border: `1px solid ${C.line}`, background: "#fff", color: C.sub, borderRadius: 8, width: 26, height: 26, fontSize: 15, fontWeight: 800, fontFamily: FONT, lineHeight: 1 }}>−</button>
-              <input type="number" min={8} max={30} value={t.v}
-                onChange={(e) => { const n = Number(e.target.value); if (!isNaN(n)) t.set(Math.min(30, Math.max(8, n))); }}
-                style={{ width: 44, textAlign: "center", border: "none", outline: "none", fontSize: 16, fontWeight: 800, color: C.ink, fontFamily: FONT, background: "transparent" }} />
-              <button onClick={() => t.set(Math.min(30, +(t.v + 1)))} className="cursor-pointer" style={{ border: `1px solid ${C.line}`, background: "#fff", color: C.sub, borderRadius: 8, width: 26, height: 26, fontSize: 15, fontWeight: 800, fontFamily: FONT, lineHeight: 1 }}>＋</button>
-              <span style={{ fontSize: 10.5, color: C.sub }}>mmHg</span>
+            <div key={t.l} className="flex items-center gap-3" style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: "9px 12px" }}>
+              <span style={{ fontSize: 13, fontWeight: 800, color: t.col, width: 62, flexShrink: 0 }}>{t.l}</span>
+              <div className="flex items-center gap-2" style={{ marginLeft: "auto" }}>
+                <button onClick={() => t.set(Math.max(8, +(t.v - 1)))} className="cursor-pointer" style={{ border: `1px solid ${C.line}`, background: "#fff", color: C.sub, borderRadius: 8, width: 30, height: 30, fontSize: 17, fontWeight: 800, fontFamily: FONT, lineHeight: 1 }}>−</button>
+                <input type="number" min={8} max={30} value={t.v}
+                  onChange={(e) => { const n = Number(e.target.value); if (!isNaN(n)) t.set(Math.min(30, Math.max(8, n))); }}
+                  style={{ width: 48, textAlign: "center", border: "none", outline: "none", fontSize: 18, fontWeight: 800, color: C.ink, fontFamily: FONT, background: "transparent" }} />
+                <button onClick={() => t.set(Math.min(30, +(t.v + 1)))} className="cursor-pointer" style={{ border: `1px solid ${C.line}`, background: "#fff", color: C.sub, borderRadius: 8, width: 30, height: 30, fontSize: 17, fontWeight: 800, fontFamily: FONT, lineHeight: 1 }}>＋</button>
+                <span style={{ fontSize: 11, color: C.sub, width: 34, flexShrink: 0 }}>mmHg</span>
+              </div>
             </div>
           ))}
         </div>
@@ -903,11 +938,11 @@ function IOPScreen({ sessions, setSessions, targetOD, targetOS, setTargetOD, set
           </div>
           <div style={{ height: 150, marginTop: 2 }}>
             <ResponsiveContainer width="100%" height="100%">
-              <ScatterChart margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
+              <ScatterChart margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
                 <ReferenceArea y1={12} y2={targetOS + 1} fill={C.low} fillOpacity={0.08} />
                 <CartesianGrid stroke={C.line} vertical={false} />
                 <XAxis type="number" dataKey="tv" domain={[6, 22]} ticks={[6, 10, 14, 18, 22]} tickFormatter={(v) => `${v}시`} tick={{ fontSize: 10, fill: C.sub }} axisLine={false} tickLine={false} />
-                <YAxis type="number" domain={[12, 22]} tick={{ fontSize: 10, fill: C.sub }} axisLine={false} tickLine={false} width={34} />
+                <YAxis type="number" domain={[12, 22]} tick={{ fontSize: 10, fill: C.sub }} axisLine={false} tickLine={false} width={38} tickMargin={4} />
                 <ReferenceLine y={targetOD} stroke={C.low} strokeDasharray="3 3" />
                 <Tooltip contentStyle={{ borderRadius: 12, border: `1px solid ${C.line}`, fontSize: 12 }} formatter={(v, n) => [`${v} mmHg`, n === "od" ? "우안" : "좌안"]} labelFormatter={() => ""} />
                 <Scatter name="od" data={sessions} fill={C.odC} dataKey="od" />
@@ -1040,16 +1075,6 @@ function DropsScreen({ meds, setMeds, nowMin, setNowMin, upcoming = [], overdue 
       <div style={{ fontSize: 11.5, color: C.sub, textAlign: "center", lineHeight: 1.5 }}>
         예정 시간 <b>30분 전</b>에 미리 알림, 예정 시간까지 점안하지 않으면 <b>자동 알람</b>이 울립니다.
       </div>
-
-      {/* 데모용 현재 시각 조정 */}
-      <Card style={{ padding: 12, background: "#F7FBFA" }}>
-        <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
-          <Clock size={14} color={C.sub} />
-          <span style={{ fontSize: 11.5, fontWeight: 700, color: C.sub }}>현재 시각(데모)</span>
-          <input type="time" value={minToHM(nowMin)} onChange={(e) => { const [h, mm] = e.target.value.split(":").map(Number); if (!isNaN(h)) setNowMin(h * 60 + mm); }} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: "5px 8px", fontSize: 12, fontFamily: FONT, color: C.ink, outline: "none", background: "#fff" }} />
-          <span style={{ fontSize: 10.5, color: C.sub }}>시각을 바꿔 30분 전 알림·시간 초과 알람 동작을 확인할 수 있어요.</span>
-        </div>
-      </Card>
     </div>
   );
 }
@@ -1147,44 +1172,44 @@ function ChoiceRow({ value, set, opts }) {
    HEALTH (watch)
    ============================================================ */
 const WATCH_METRICS = [
-  { cat: "활동", icon: Footprints, items: [
-    { k: "걸음 수", v: "6,420", u: "걸음", plat: "both", link: "Q9" },
-    { k: "이동 거리", v: "4.8", u: "km", plat: "both" },
-    { k: "오른 층수", v: "9", u: "층", plat: "both" },
-    { k: "활동 칼로리", v: "412", u: "kcal", plat: "both" },
-    { k: "운동 시간(중강도↑)", v: "26", u: "분", plat: "both", link: "Q9" },
-    { k: "서 있는 시간", v: "9", u: "시간", plat: "apple" },
-    { k: "VO₂max (심폐체력)", v: "31.2", u: "mL/kg·min", plat: "both" },
+  { cat: "활동", icon: Footprints, note: "오늘 누적 · 최근 7일 평균 병기", items: [
+    { k: "걸음 수", v: "6,420", u: "걸음", avg7: "7,100", plat: "both", link: "Q9" },
+    { k: "이동 거리", v: "4.8", u: "km", avg7: "5.2", plat: "both" },
+    { k: "오른 층수", v: "9", u: "층", avg7: "11", plat: "both" },
+    { k: "활동 칼로리", v: "412", u: "kcal", avg7: "455", plat: "both" },
+    { k: "운동 시간(중강도↑)", v: "26", u: "분", avg7: "31", plat: "both", link: "Q9" },
+    { k: "서 있는 시간", v: "9", u: "시간", avg7: "10", plat: "apple" },
+    { k: "VO₂max (심폐체력)", v: "31.2", u: "mL/kg·min", measuredAt: "6/29 측정", plat: "both" },
   ]},
-  { cat: "심장", icon: HeartPulse, items: [
-    { k: "현재 심박수", v: "72", u: "bpm", plat: "both" },
-    { k: "안정 시 심박수", v: "61", u: "bpm", plat: "both" },
+  { cat: "심장", icon: HeartPulse, note: "심박은 실시간 · HRV/안정심박은 7일 평균", items: [
+    { k: "현재 심박수", v: "72", u: "bpm", sub: "실시간", plat: "both" },
+    { k: "안정 시 심박수", v: "61", u: "bpm", avg7: "62", plat: "both" },
     { k: "심박 범위(오늘)", v: "54–118", u: "bpm", plat: "both" },
-    { k: "심박변이도 (HRV)", v: "38", u: "ms", plat: "both" },
-    { k: "불규칙 맥박 알림 (IRN)", v: "감지 6/30", u: "", plat: "both", alert: true, link: "Q11" },
-    { k: "심전도 (ECG) 기록", v: "미기록", u: "", plat: "both" },
-    { k: "고·저심박 알림", v: "없음", u: "", plat: "both" },
+    { k: "심박변이도 (HRV)", v: "38", u: "ms", avg7: "36", plat: "both" },
+    { k: "불규칙 맥박 알림 (IRN)", v: "감지", u: "", measuredAt: "6/30 감지", plat: "both", alert: true, link: "Q11" },
+    { k: "심전도 (ECG) 기록", v: "미기록", u: "", measuredAt: "최근 기록 없음", stale: true, plat: "both" },
+    { k: "고·저심박 알림", v: "없음", u: "", sub: "최근 30일", plat: "both" },
   ]},
-  { cat: "수면", icon: Moon, items: [
-    { k: "총 수면 시간", v: "6시간 40분", u: "", plat: "both", link: "Q10" },
-    { k: "깊은 수면", v: "58", u: "분", plat: "both" },
-    { k: "렘(REM) 수면", v: "1시간 12분", u: "", plat: "both" },
-    { k: "얕은 수면", v: "4시간 05분", u: "", plat: "both" },
-    { k: "깬 시간", v: "25", u: "분", plat: "both" },
-    { k: "수면 중 혈중산소 (SpO₂)", v: "94–98", u: "%", plat: "both" },
-    { k: "수면 중 호흡수", v: "14.2", u: "회/분", plat: "both" },
-    { k: "코골이 감지", v: "27분", u: "", plat: "galaxy", link: "Q2" },
-    { k: "수면 점수", v: "71 · 보통", u: "", plat: "both", link: "Q10" },
+  { cat: "수면", icon: Moon, note: "지난밤 · 최근 7일 평균 병기", items: [
+    { k: "총 수면 시간", v: "6시간 40분", u: "", avg7: "6시간 55분", plat: "both", link: "Q10" },
+    { k: "깊은 수면", v: "58", u: "분", avg7: "1시간 04분", plat: "both" },
+    { k: "렘(REM) 수면", v: "1시간 12분", u: "", avg7: "1시간 18분", plat: "both" },
+    { k: "얕은 수면", v: "4시간 05분", u: "", avg7: "4시간 08분", plat: "both" },
+    { k: "깬 시간", v: "25", u: "분", avg7: "21분", plat: "both" },
+    { k: "수면 중 혈중산소 (SpO₂)", v: "94–98", u: "%", avg7: "95–98%", plat: "both" },
+    { k: "수면 중 호흡수", v: "14.2", u: "회/분", avg7: "14.0", plat: "both" },
+    { k: "코골이 감지", v: "27분", u: "", avg7: "19분", plat: "galaxy", link: "Q2" },
+    { k: "수면 점수", v: "71 · 보통", u: "", avg7: "74", plat: "both", link: "Q10" },
   ]},
-  { cat: "신체·기타", icon: Activity, items: [
-    { k: "혈중산소 (SpO₂, 주간)", v: "97", u: "%", plat: "both" },
-    { k: "피부 온도 변화(야간)", v: "+0.3", u: "°C", plat: "both" },
-    { k: "스트레스 지수", v: "42 · 보통", u: "", plat: "galaxy" },
-    { k: "체성분 (BIA)", v: "골격근 24.1kg · 체지방 28%", u: "", plat: "galaxy" },
-    { k: "혈압(커프 보정)", v: "128/84", u: "mmHg", plat: "galaxy", link: "Q3·Q4" },
-    { k: "마음챙김·호흡 세션", v: "5", u: "분", plat: "both" },
-    { k: "낙상 감지", v: "정상", u: "", plat: "both" },
-    { k: "소음 노출", v: "68", u: "dB", plat: "apple" },
+  { cat: "신체·기타", icon: Activity, note: "스팟 측정 · 측정 시점 표기 (2주 경과 시 회색)", items: [
+    { k: "혈중산소 (SpO₂, 주간)", v: "97", u: "%", measuredAt: "오늘 09:12 측정", plat: "both" },
+    { k: "피부 온도 변화(야간)", v: "+0.3", u: "°C", measuredAt: "지난밤", plat: "both" },
+    { k: "스트레스 지수", v: "42 · 보통", u: "", measuredAt: "오늘 08:40 측정", plat: "galaxy" },
+    { k: "체성분 (BIA)", v: "골격근 24.1kg · 체지방 28%", u: "", measuredAt: "6/28 측정", plat: "galaxy" },
+    { k: "혈압(커프 보정)", v: "128/84", u: "mmHg", measuredAt: "7/2 07:55 측정", plat: "galaxy", link: "Q3·Q4" },
+    { k: "마음챙김·호흡 세션", v: "5", u: "분", sub: "오늘", plat: "both" },
+    { k: "낙상 감지", v: "정상", u: "", sub: "최근 30일 이벤트 없음", plat: "both" },
+    { k: "소음 노출", v: "68", u: "dB", measuredAt: "6/15 측정", stale: true, plat: "apple" },
   ]},
 ];
 function PlatBadge({ plat }) {
@@ -1213,14 +1238,15 @@ function HealthScreen() {
 
       {WATCH_METRICS.map((g) => (
         <Card key={g.cat} style={{ padding: 15 }}>
-          <div className="flex items-center gap-2" style={{ marginBottom: 6 }}>
+          <div className="flex items-center gap-2" style={{ marginBottom: 2, flexWrap: "wrap" }}>
             <g.icon size={16} color={C.primary} strokeWidth={2.2} />
             <span style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>{g.cat}</span>
             <span style={{ fontSize: 10.5, color: C.sub }}>{g.items.length}개 지표</span>
           </div>
+          {g.note && <div style={{ fontSize: 10, color: C.gold, fontWeight: 700, marginBottom: 6 }}>{g.note}</div>}
           <div className="flex flex-col">
             {g.items.map((it, i) => (
-              <div key={it.k} className="flex items-center gap-2" style={{ padding: "8px 0", borderBottom: i < g.items.length - 1 ? `1px solid ${C.line}` : "none" }}>
+              <div key={it.k} className="flex items-center gap-2" style={{ padding: "8px 0", borderBottom: i < g.items.length - 1 ? `1px solid ${C.line}` : "none", opacity: it.stale ? 0.55 : 1 }}>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5" style={{ flexWrap: "wrap" }}>
                     <span style={{ fontSize: 12.5, fontWeight: 600, color: C.ink }}>{it.k}</span>
@@ -1229,8 +1255,13 @@ function HealthScreen() {
                   </div>
                 </div>
                 <div className="text-right flex-shrink-0">
-                  <span style={{ fontSize: 13.5, fontWeight: 800, color: it.alert ? C.high : C.primary, fontVariantNumeric: "tabular-nums" }}>{it.v}</span>
-                  {it.u && <span style={{ fontSize: 10.5, color: C.sub, marginLeft: 3 }}>{it.u}</span>}
+                  <div>
+                    <span style={{ fontSize: 13.5, fontWeight: 800, color: it.alert ? C.high : it.stale ? C.grey : C.primary, fontVariantNumeric: "tabular-nums" }}>{it.v}</span>
+                    {it.u && <span style={{ fontSize: 10.5, color: C.sub, marginLeft: 3 }}>{it.u}</span>}
+                  </div>
+                  {it.avg7 && <div style={{ fontSize: 9.5, color: C.sub, marginTop: 1 }}>7일 평균 <b style={{ color: C.ink }}>{it.avg7}</b></div>}
+                  {it.measuredAt && <div style={{ fontSize: 9.5, color: it.stale ? C.grey : C.sub, marginTop: 1 }}>{it.measuredAt}{it.stale ? " · 재측정 권장" : ""}</div>}
+                  {it.sub && !it.avg7 && !it.measuredAt && <div style={{ fontSize: 9.5, color: C.sub, marginTop: 1 }}>{it.sub}</div>}
                 </div>
               </div>
             ))}
@@ -1554,11 +1585,11 @@ function ClinicianWeb() {
             <>
               <div style={{ height: 150 }}>
                 <ResponsiveContainer width="100%" height="100%">
-                  <ScatterChart margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
+                  <ScatterChart margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
                     <ReferenceArea y1={12} y2={16} fill={C.low} fillOpacity={0.08} />
                     <CartesianGrid stroke={C.line} vertical={false} />
                     <XAxis type="number" dataKey="tv" domain={[6, 22]} ticks={[6, 10, 14, 18, 22]} tickFormatter={(v) => `${v}시`} tick={{ fontSize: 10, fill: C.sub }} axisLine={false} tickLine={false} />
-                    <YAxis type="number" domain={[12, 22]} tick={{ fontSize: 10, fill: C.sub }} axisLine={false} tickLine={false} width={34} />
+                    <YAxis type="number" domain={[12, 22]} tick={{ fontSize: 10, fill: C.sub }} axisLine={false} tickLine={false} width={40} tickMargin={4} />
                     <ReferenceLine y={15} stroke={C.low} strokeDasharray="3 3" />
                     <Tooltip contentStyle={{ borderRadius: 12, border: `1px solid ${C.line}`, fontSize: 12 }} />
                     <Scatter data={SESSIONS_INIT} dataKey="od" fill={C.odC} />
@@ -1634,12 +1665,12 @@ function ClinicianWeb() {
         </div>
         <div style={{ height: 190 }}>
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={corr} margin={{ top: 6, right: 6, left: -18, bottom: 0 }}>
+            <ComposedChart data={corr} margin={{ top: 6, right: 6, left: 0, bottom: 0 }}>
               <ReferenceArea yAxisId="l" y1={12} y2={16} fill={C.low} fillOpacity={0.07} />
               <CartesianGrid stroke={C.line} vertical={false} />
               <XAxis dataKey="d" interval="preserveStartEnd" minTickGap={16} tick={{ fontSize: 9.5, fill: C.sub }} axisLine={false} tickLine={false} />
-              <YAxis yAxisId="l" domain={[12, 22]} tick={{ fontSize: 10, fill: C.sub }} axisLine={false} tickLine={false} width={34} />
-              <YAxis yAxisId="r" orientation="right" domain={[0, 100]} ticks={[0, 50, 100]} tickFormatter={(v) => `${v}%`} tick={{ fontSize: 9.5, fill: C.grey }} axisLine={false} tickLine={false} width={34} />
+              <YAxis yAxisId="l" domain={[12, 22]} tick={{ fontSize: 10, fill: C.sub }} axisLine={false} tickLine={false} width={40} tickMargin={4} />
+              <YAxis yAxisId="r" orientation="right" domain={[0, 100]} ticks={[0, 50, 100]} tickFormatter={(v) => `${v}%`} tick={{ fontSize: 9.5, fill: C.grey }} axisLine={false} tickLine={false} width={38} tickMargin={4} />
               <ReferenceLine yAxisId="l" y={15} stroke={C.low} strokeDasharray="3 3" />
               <Tooltip contentStyle={{ borderRadius: 12, border: `1px solid ${C.line}`, fontSize: 12 }} formatter={(v, n) => n === "adh" ? [`${v}%`, "순응도"] : [`${v} mmHg`, n === "od" ? "우안" : "좌안"]} />
               <Bar yAxisId="r" dataKey="adh" name="adh" barSize={14} radius={[3, 3, 0, 0]}>
